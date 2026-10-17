@@ -17,16 +17,20 @@ from test_service import FakeLink  # noqa: E402
 FRAME = 64 * 54 * 3
 
 
-def body(frametime_ns, steam=False, refresh=60):
+NONE = fps.NO_VALUE
+
+
+def body(frametime_ns, steam=False, refresh=60, visible_ns=NONE):
     """A mangoapp_msg_v1 body as gamescope packs it (without the C long mtype)."""
-    return (struct.pack("<IIQBBQQIIH", 1, 1234, frametime_ns, 0, 0, 0, 0, 1920, 1080, refresh)
+    return (struct.pack("<IIQBBQQIIH", 1, 1234, frametime_ns, 0, 0, visible_ns, NONE, 1920, 1080, refresh)
             + bytes([0x02 if steam else 0]) + b"gamescope".ljust(40, b"\0") + b"\0\0")
 
 
 class ParseTest(unittest.TestCase):
     def test_fields(self):
-        self.assertEqual(fps.parse(body(16_666_667)), (16_666_667, 60, False))
-        self.assertTrue(fps.parse(body(1, steam=True))[2])
+        self.assertEqual(fps.parse(body(16_666_667)), (16_666_667, None, 60, False))
+        self.assertEqual(fps.parse(body(NONE, visible_ns=33_333_333)), (None, 33_333_333, 60, False))
+        self.assertTrue(fps.parse(body(1, steam=True))[3])
         self.assertIsNone(fps.parse(b"\x01\x00"))
 
     def test_frame_rate_is_the_median(self):

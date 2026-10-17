@@ -1,5 +1,6 @@
 # Decky backend entry point: settings, the faceplate worker, frontend callables.
 
+import asyncio
 import os
 import sys
 
@@ -10,7 +11,7 @@ import decky
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "py_modules"))
 
 from pixelface import __version__  # noqa: E402
-from pixelface import render  # noqa: E402
+from pixelface import diag, render  # noqa: E402
 from pixelface.handoff import faceplate_owner  # noqa: E402
 from pixelface.power_events import PowerEvents  # noqa: E402
 from pixelface.service import FaceplateService  # noqa: E402
@@ -88,3 +89,13 @@ class Plugin:
             return {"ok": False, "error": "could not save: %s" % error, "status": self.service.status()}
         self.service.configure(values)
         return {"ok": True, "error": "", "status": self.service.status()}
+
+    async def write_diagnostics(self, frontend: dict = None):
+        """Write ~/pixel-faceplate-diagnostics.txt; returns {ok, path, summary, error}."""
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, diag.write_report, self.service, frontend or {})
+            return dict(result, ok=True, error="")
+        except Exception as error:  # a report must never take the plugin down
+            decky.logger.exception("[Pixel Faceplate] diagnostics failed")
+            return {"ok": False, "path": "", "summary": "", "error": "%s: %s" % (type(error).__name__, error)}

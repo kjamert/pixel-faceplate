@@ -25,6 +25,7 @@ import {
   Status,
   gameEvent,
   getStatus,
+  writeDiagnostics,
   saveGameSettings,
   saveSettings,
 } from "./api";
@@ -87,6 +88,7 @@ function Content() {
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
   const [brightness, setBrightness] = useState<number | null>(null);
+  const [diagnostics, setDiagnostics] = useState("");
   const brightnessTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -384,6 +386,23 @@ function Content() {
             {status.uploads} / {status.lifetime_uploads}
           </Field>
         </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            description={diagnostics || "Run it while a game is running; it writes a report file to your home folder"}
+            onClick={async () => {
+              setDiagnostics("Writing report (takes a couple of seconds)...");
+              try {
+                const result = await writeDiagnostics(frontendSnapshot());
+                setDiagnostics(result.ok ? `${result.summary} Saved to ${result.path}` : `Failed: ${result.error}`);
+              } catch (e) {
+                setDiagnostics(`Failed: ${String(e)}`);
+              }
+            }}
+          >
+            Write diagnostics report
+          </ButtonItem>
+        </PanelSectionRow>
         {(error || pollError || status.last_error) && (
           <PanelSectionRow>
             <Field label="Error" description={error || pollError || status.last_error} focusable={false} />
@@ -429,6 +448,33 @@ function runningAppId(): number {
   }
 }
 
+// The last few launch/exit events, for the diagnostics report.
+const recentEvents: { at: string; appid: number; running: boolean; from: string }[] = [];
+
+function logEvent(appid: number, running: boolean, from: string) {
+  recentEvents.push({ at: new Date().toISOString(), appid, running, from });
+  if (recentEvents.length > 10) recentEvents.shift();
+}
+
+function frontendSnapshot(): Record<string, unknown> {
+  let app: Record<string, unknown> = {};
+  try {
+    const main = (window as unknown as { SteamUIStore?: { MainRunningApp?: Record<string, unknown> | null } })
+      .SteamUIStore?.MainRunningApp;
+    if (main) {
+      for (const key of ["appid", "gameid", "display_name", "app_type", "local_per_client_data"]) {
+        const value = main[key];
+        app[key] = typeof value === "object" ? String(value) : value;
+      }
+    } else {
+      app = { none: true };
+    }
+  } catch (e) {
+    app = { error: String(e) };
+  }
+  return { main_running_appid: runningAppId(), main_running_app: app, recent_events: recentEvents };
+}
+
 function watchGames(): () => void {
   let registration: { unregister?: () => void } | undefined;
   try {
@@ -437,6 +483,7 @@ function watchGames(): () => void {
     }).SteamClient?.GameSessions;
     registration = sessions?.RegisterForAppLifetimeNotifications?.((event) => {
       const appid = Number(event?.unAppID) >>> 0;
+      logEvent(appid, Boolean(event?.bRunning), "lifetime event");
       if (appid) gameEvent(appid, Boolean(event?.bRunning)).catch(() => undefined);
       if (event?.bRunning) {
         // If the event's ID isn't the one Steam's UI settles on (with
@@ -456,6 +503,7 @@ function watchGames(): () => void {
   const timer = window.setInterval(() => {
     const now = runningAppId();
     if (now === last) return;
+    logEvent(now, Boolean(now), "SteamUIStore");
     if (last) gameEvent(last, false).catch(() => undefined);
     if (now) gameEvent(now, true).catch(() => undefined);
     last = now;

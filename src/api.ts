@@ -62,3 +62,13 @@ export const saveSettings = callable<[changes: Partial<Settings>], SaveResult>("
 export const saveGameSettings = callable<[appid: number, changes: Partial<GameProfile> | null], SaveResult>(
   "save_game_settings",
 );
+
+export interface DiagnosticsResult {
+  ok: boolean;
+  path: string;
+  summary: string;
+  error: string;
+}
+
+// What Steam's UI knows about the running game, passed along into the report.
+export const writeDiagnostics = callable<[frontend: Record<string, unknown>], DiagnosticsResult>("write_diagnostics");

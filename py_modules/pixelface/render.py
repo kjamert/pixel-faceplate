@@ -434,6 +434,25 @@ def _active_grid_dir(root):
     return None
 
 
+def grid_dirs(root, appid):
+    """Grid folders to look in: the most recent login's, then (shortcuts only) every other account's.
+
+    A Steam game's custom art belongs to whoever is logged in. A non-Steam
+    game's ID is already per account, so if the active account can't be
+    told from loginusers.vdf, any account's grid art for it is the right one.
+    """
+    active = _active_grid_dir(root)
+    dirs = [active] if active else []
+    if appid & SHORTCUT_BIT or not dirs:
+        others = glob.glob(os.path.join(root, "userdata", "*", "config", "grid"))
+        try:
+            others.sort(key=os.path.getmtime, reverse=True)
+        except OSError:
+            pass
+        dirs += [d for d in others if d != active and (appid & SHORTCUT_BIT)]
+    return dirs
+
+
 def find_art(appid, kind, root=STEAM_ROOT):
     """Path of a game's art of one kind (hero, header, capsule, logo), or None.
 
@@ -443,8 +462,7 @@ def find_art(appid, kind, root=STEAM_ROOT):
     appid = normalize_appid(appid)
     if not appid:
         return None
-    grid = _active_grid_dir(root)
-    if grid:
+    for grid in grid_dirs(root, appid):
         for ext in IMAGE_EXTENSIONS:
             path = os.path.join(grid, "%d%s.%s" % (appid & 0xFFFFFFFF, GRID_SUFFIX[kind], ext))
             if _usable(path):

@@ -21,6 +21,7 @@ FRAME_TYPES = (1, 100)
 # Offsets inside the message body (after the C long mtype).
 OFF_VERSION = 0
 OFF_APP_FRAMETIME = 8
+OFF_VISIBLE_FRAMETIME = 18
 OFF_REFRESH = 42
 OFF_FLAGS = 44  # bit 0 app wants HDR, bit 1 Steam (not the game) has focus
 MIN_BODY = OFF_FLAGS + 1
@@ -34,17 +35,26 @@ class _Message(ctypes.Structure):
     _fields_ = [("mtype", ctypes.c_long), ("body", ctypes.c_ubyte * 1016)]
 
 
+NO_VALUE = 0xFFFFFFFFFFFFFFFF
+
+
 def parse(body):
-    """(app frame time in ns, refresh Hz, Steam focused) from one message body, or None."""
+    """(app frame time, visible frame time (ns, None if unset), refresh Hz, Steam focused), or None.
+
+    gamescope sends two kinds of message: one per game frame (app frame time
+    set, visible unset) and one per new frame on screen (the other way round).
+    """
     if len(body) < MIN_BODY:
         return None
     (version,) = struct.unpack_from("<I", body, OFF_VERSION)
     if version < 1:
         return None
-    (frametime,) = struct.unpack_from("<Q", body, OFF_APP_FRAMETIME)
+    (app,) = struct.unpack_from("<Q", body, OFF_APP_FRAMETIME)
+    (visible,) = struct.unpack_from("<Q", body, OFF_VISIBLE_FRAMETIME)
     (refresh,) = struct.unpack_from("<H", body, OFF_REFRESH)
     steam_focused = bool(body[OFF_FLAGS] & 0x02)
-    return frametime, refresh, steam_focused
+    return (None if app == NO_VALUE else app, None if visible == NO_VALUE else visible,
+            refresh, steam_focused)
 
 
 def frame_rate(frametimes):
@@ -82,6 +92,9 @@ class MangoappFeed:
         self._libc = libc
         self._proc_root = proc_root
         self.queue = -1
+        self.key = None
+        # What the last sample saw, for the diagnostics report.
+        self.stats = {}
 
     def _lib(self):
         if self._libc is None:
@@ -103,7 +116,10 @@ class MangoappFeed:
         # own working directory; with no such file there it's -1, a fixed key.
         cwd = _gamescope_cwd(self._proc_root)
         key = lib.ftok(os.path.join(cwd, "mangoapp").encode(), 65) if cwd else -1
+        self.key = key
         self.queue = lib.msgget(key, 0)  # never create one
+        if self.queue < 0:
+            self.stats = {"error": "no mangoapp queue for key %d (errno %d)" % (key, ctypes.get_errno())}
         return self.queue >= 0
 
     def _receive(self, mtype):
@@ -127,21 +143,38 @@ class MangoappFeed:
                 for _ in range(MAX_DRAIN):  # throw away what piled up before this sample
                     if not self._receive(mtype):
                         break
-            times = []
+            app_times, visible_times = [], []
+            stats = {"queue": self.queue, "key": self.key, "by_type": {}, "steam_focused": 0, "unparsed": 0}
             end = time.monotonic() + seconds
             while time.monotonic() < end:
                 got = False
                 for mtype in FRAME_TYPES:
                     body = self._receive(mtype)
                     if body is None:
+                        stats["error"] = "queue went away"
+                        self.stats = stats
                         return None
                     if body:
                         got = True
+                        stats["by_type"][mtype] = stats["by_type"].get(mtype, 0) + 1
                         parsed = parse(body)
-                        if parsed and not parsed[2]:
-                            times.append(parsed[0])
+                        if not parsed:
+                            stats["unparsed"] += 1
+                        elif parsed[3]:
+                            stats["steam_focused"] += 1
+                        else:
+                            if parsed[0] is not None:
+                                app_times.append(parsed[0])
+                            if parsed[1] is not None:
+                                visible_times.append(parsed[1])
                 if not got:
                     time.sleep(0.004)
-            return frame_rate(times)
+            # The game's own frames first; frames reaching the screen if those are missing.
+            result = frame_rate(app_times)
+            if result is None:
+                result = frame_rate(visible_times)
+            stats.update(app_frames=len(app_times), visible_frames=len(visible_times), fps=result)
+            self.stats = stats
+            return result
         except (OSError, AttributeError, ValueError):
             return None

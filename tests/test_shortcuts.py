@@ -78,5 +78,24 @@ class GridArtTest(unittest.TestCase):
             self.assertIsNone(render.find_art(SHORTCUT, "capsule", root))
 
 
+
+
+class AnyAccountTest(unittest.TestCase):
+    def test_shortcut_art_found_without_a_most_recent_login(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "config"))
+            with open(os.path.join(root, "config", "loginusers.vdf"), "w") as handle:
+                handle.write('"users"\n{\n"76561197960287930"\n{\n"MostRecent" "0"\n}\n}\n')
+            grid = os.path.join(root, "userdata", "12345", "config", "grid")
+            os.makedirs(grid)
+            with open(os.path.join(grid, "%d_hero.jpg" % SHORTCUT), "wb") as handle:
+                handle.write(b"x")
+            self.assertEqual(render.find_art(SHORTCUT, "hero", root), os.path.join(grid, "%d_hero.jpg" % SHORTCUT))
+            # A Steam game's custom art still comes from the logged-in account only.
+            with open(os.path.join(grid, "570_hero.jpg"), "wb") as handle:
+                handle.write(b"x")
+            self.assertEqual(render.grid_dirs(root, 570), [])
+
+
 if __name__ == "__main__":
     unittest.main()
