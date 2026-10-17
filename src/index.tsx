@@ -70,10 +70,10 @@ const LOGO_POSITIONS: { data: LogoPosition; label: string }[] = [
 ];
 
 const CAT_INTERVALS = [
+  { data: 1, label: "Every minute" },
+  { data: 3, label: "Every 3 minutes" },
   { data: 5, label: "Every 5 minutes" },
   { data: 10, label: "Every 10 minutes" },
-  { data: 30, label: "Every 30 minutes" },
-  { data: 60, label: "Every hour" },
 ];
 
 const COLORS = [

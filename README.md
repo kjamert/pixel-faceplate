@@ -34,7 +34,7 @@ A fork of [hodapp/pixel-faceplate](https://github.com/hodapp/pixel-faceplate) wi
 
 - **Non-Steam games** show their artwork too (shortcuts added to Steam, with art from SteamGridDB).
 - **Art from Steam's CDN** when a Steam game's art isn't in the local library cache. It's fetched once and kept in the plugin's folder.
-- **Random cats** between games (Game artwork > Between games > Random cats): a cat photo from [TheCatAPI](https://thecatapi.com) or [CATAAS](https://cataas.com), a new one every 5 to 60 minutes (10 by default), plus a Next cat button. Each new cat is a flash write. The last 40 are kept, so with no network the panel still shows ones it already has.
+- **Random cats** between games (Game artwork > Between games > Random cats): a cat photo from [TheCatAPI](https://thecatapi.com) or [CATAAS](https://cataas.com), a new one every 1, 3, 5 or 10 minutes (10 by default), plus a Next cat button. Each new cat is a flash write. The last 40 are kept, so with no network the panel still shows ones it already has.
 - **Write diagnostics report** button (Status section): writes `~/pixel-faceplate-diagnostics.txt` with how the running game was detected and where its art was looked for.
 - A GitHub Actions workflow builds the installable ZIP on every push (Actions tab, Artifacts).
 
