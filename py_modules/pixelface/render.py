@@ -421,17 +421,30 @@ def _usable(path):
 
 
 def _active_grid_dir(root):
-    """config/grid of the most recent login only, never another account's overrides."""
+    """config/grid of the logged-in account only, never another account's overrides.
+
+    That's the login marked MostRecent in loginusers.vdf; some installs don't
+    write that flag, so then the newest Timestamp, or the only account there is.
+    """
     try:
         with open(os.path.join(root, "config", "loginusers.vdf"), encoding="utf-8") as handle:
             content = handle.read()
     except OSError:
-        return None
+        content = ""
+    accounts = []
     for match in re.finditer(r'"(\d{16,20})"\s*\{([^{}]*)\}', content):
-        if re.search(r'"MostRecent"\s*"1"', match.group(2), re.IGNORECASE):
-            grid = os.path.join(root, "userdata", str(int(match.group(1)) & 0xFFFFFFFF), "config", "grid")
-            return grid if os.path.isdir(grid) else None
-    return None
+        recent = re.search(r'"MostRecent"\s*"1"', match.group(2), re.IGNORECASE)
+        stamp = re.search(r'"Timestamp"\s*"(\d+)"', match.group(2), re.IGNORECASE)
+        accounts.append((1 if recent else 0, int(stamp.group(1)) if stamp else 0, int(match.group(1)) & 0xFFFFFFFF))
+    if accounts:
+        account = max(accounts)[2]
+    else:
+        found = glob.glob(os.path.join(root, "userdata", "*", "config", "grid"))
+        if len(found) != 1:
+            return None
+        return found[0]
+    grid = os.path.join(root, "userdata", str(account), "config", "grid")
+    return grid if os.path.isdir(grid) else None
 
 
 def grid_dirs(root, appid):

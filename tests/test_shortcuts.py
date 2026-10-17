@@ -97,5 +97,27 @@ class AnyAccountTest(unittest.TestCase):
             self.assertEqual(render.grid_dirs(root, 570), [])
 
 
+class ActiveAccountTest(unittest.TestCase):
+    def _root(self, vdf, users):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "config"))
+        with open(os.path.join(root, "config", "loginusers.vdf"), "w") as handle:
+            handle.write(vdf)
+        for user in users:
+            os.makedirs(os.path.join(root, "userdata", str(user), "config", "grid"))
+        return root
+
+    def test_newest_timestamp_without_most_recent(self):
+        root = self._root('"users"\n{\n"76561198000000001"\n{\n"Timestamp" "100"\n}\n'
+                          '"76561198000000002"\n{\n"Timestamp" "200"\n}\n}\n',
+                          [76561198000000001 & 0xFFFFFFFF, 76561198000000002 & 0xFFFFFFFF])
+        self.assertTrue(render._active_grid_dir(root).endswith("/%d/config/grid" % (76561198000000002 & 0xFFFFFFFF)))
+
+    def test_only_account_without_any_flags(self):
+        root = self._root('"users"\n{\n"76561198407183909"\n{\n"AccountName" "x"\n}\n}\n',
+                          [76561198407183909 & 0xFFFFFFFF])
+        self.assertTrue(render._active_grid_dir(root).endswith("/446918181/config/grid"))
+
+
 if __name__ == "__main__":
     unittest.main()

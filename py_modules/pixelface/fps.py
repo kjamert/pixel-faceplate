@@ -12,6 +12,7 @@ import ctypes.util
 import errno
 import os
 import struct
+import threading
 import time
 
 IPC_NOWAIT = 0o4000
@@ -27,8 +28,6 @@ OFF_FLAGS = 44  # bit 0 app wants HDR, bit 1 Steam (not the game) has focus
 MIN_BODY = OFF_FLAGS + 1
 # Fewer frames than this in a sample isn't a frame rate worth showing.
 MIN_FRAMES = 5
-# Stale messages left from before are skipped, up to this many.
-MAX_DRAIN = 4096
 
 
 class _Message(ctypes.Structure):
@@ -95,6 +94,9 @@ class MangoappFeed:
         self.key = None
         # What the last sample saw, for the diagnostics report.
         self.stats = {}
+        # Frame types with a reader thread still waiting in msgrcv.
+        self._readers = set()
+        self._readers_lock = threading.Lock()
 
     def _lib(self):
         if self._libc is None:
@@ -122,53 +124,60 @@ class MangoappFeed:
             self.stats = {"error": "no mangoapp queue for key %d (errno %d)" % (key, ctypes.get_errno())}
         return self.queue >= 0
 
-    def _receive(self, mtype):
-        """One message body of this type, b"" if none is waiting, None if the queue is gone."""
-        message = _Message()
-        size = self._lib().msgrcv(self.queue, ctypes.byref(message), ctypes.sizeof(message.body),
-                                  mtype, IPC_NOWAIT | MSG_NOERROR)
-        if size < 0:
-            if ctypes.get_errno() in (errno.ENOMSG, errno.EAGAIN, errno.EINTR):
-                return b""
-            self.queue = -1
-            return None
-        return bytes(message.body[:size])
+    def _blocking_reader(self, mtype, sink, deadline):
+        """Wait in line for frames of one type until the deadline (runs in its own thread).
+
+        mangoapp sleeps in msgrcv, and the kernel hands a new message straight to
+        a waiting receiver instead of queueing it, so a reader that only polls
+        never sees one. Waiting too puts this reader in the same line: frames
+        alternate between the two for the sample. The thread can outlive the
+        sample by one frame (or until the next one, if the game stops drawing).
+        """
+        lib = self._lib()
+        try:
+            while True:
+                message = _Message()
+                size = lib.msgrcv(self.queue, ctypes.byref(message), ctypes.sizeof(message.body), mtype, MSG_NOERROR)
+                if size < 0:
+                    if ctypes.get_errno() == errno.EINTR:
+                        continue
+                    return
+                if time.monotonic() > deadline:
+                    return
+                sink.append((mtype, bytes(message.body[:size])))
+        finally:
+            with self._readers_lock:
+                self._readers.discard(mtype)
 
     def sample(self, seconds=1.0):
         """The game's frame rate over about `seconds`, or None (no game frames, no gamescope)."""
         try:
             if not self._open():
                 return None
-            for mtype in FRAME_TYPES:
-                for _ in range(MAX_DRAIN):  # throw away what piled up before this sample
-                    if not self._receive(mtype):
-                        break
-            app_times, visible_times = [], []
             stats = {"queue": self.queue, "key": self.key, "by_type": {}, "steam_focused": 0, "unparsed": 0}
-            end = time.monotonic() + seconds
-            while time.monotonic() < end:
-                got = False
-                for mtype in FRAME_TYPES:
-                    body = self._receive(mtype)
-                    if body is None:
-                        stats["error"] = "queue went away"
-                        self.stats = stats
-                        return None
-                    if body:
-                        got = True
-                        stats["by_type"][mtype] = stats["by_type"].get(mtype, 0) + 1
-                        parsed = parse(body)
-                        if not parsed:
-                            stats["unparsed"] += 1
-                        elif parsed[3]:
-                            stats["steam_focused"] += 1
-                        else:
-                            if parsed[0] is not None:
-                                app_times.append(parsed[0])
-                            if parsed[1] is not None:
-                                visible_times.append(parsed[1])
-                if not got:
-                    time.sleep(0.004)
+            received = []
+            deadline = time.monotonic() + seconds
+            for mtype in FRAME_TYPES:
+                with self._readers_lock:
+                    if mtype in self._readers:
+                        continue  # still waiting from last time (nothing of that type came)
+                    self._readers.add(mtype)
+                threading.Thread(target=self._blocking_reader, args=(mtype, received, deadline),
+                                 name="pixel-faceplate-fps-%d" % mtype, daemon=True).start()
+            time.sleep(seconds + 0.05)
+            app_times, visible_times = [], []
+            for mtype, body in list(received):
+                stats["by_type"][mtype] = stats["by_type"].get(mtype, 0) + 1
+                parsed = parse(body)
+                if not parsed:
+                    stats["unparsed"] += 1
+                elif parsed[3]:
+                    stats["steam_focused"] += 1
+                else:
+                    if parsed[0] is not None:
+                        app_times.append(parsed[0])
+                    if parsed[1] is not None:
+                        visible_times.append(parsed[1])
             # The game's own frames first; frames reaching the screen if those are missing.
             result = frame_rate(app_times)
             if result is None:
@@ -176,5 +185,6 @@ class MangoappFeed:
             stats.update(app_frames=len(app_times), visible_frames=len(visible_times), fps=result)
             self.stats = stats
             return result
-        except (OSError, AttributeError, ValueError):
+        except (OSError, AttributeError, ValueError) as error:
+            self.stats = {"error": str(error)}
             return None
