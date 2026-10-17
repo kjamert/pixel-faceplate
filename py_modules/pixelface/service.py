@@ -158,7 +158,7 @@ class FaceplateService:
 
     def game_event(self, appid, running):
         """Steam said a game started or stopped; redraw now instead of at the next poll."""
-        appid = int(appid or 0)
+        appid = render.normalize_appid(appid)
         if running and appid:
             self.reported_app = appid
         elif not appid or appid == self.reported_app:

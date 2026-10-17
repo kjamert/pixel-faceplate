@@ -406,8 +406,14 @@ def _active_grid_dir(root):
 
 
 def find_art(appid, kind, root=STEAM_ROOT):
-    """Path of a game's art of one kind (hero, header, capsule, logo), or None."""
-    appid = int(appid)
+    """Path of a game's art of one kind (hero, header, capsule, logo), or None.
+
+    Non-Steam games only have art in the grid folder (where SteamGridDB puts
+    it); Steam's library cache holds nothing for them.
+    """
+    appid = normalize_appid(appid)
+    if not appid:
+        return None
     grid = _active_grid_dir(root)
     if grid:
         for ext in IMAGE_EXTENSIONS:
@@ -426,8 +432,46 @@ def find_art(appid, kind, root=STEAM_ROOT):
     return None
 
 
+def normalize_appid(value):
+    """A Steam app ID as the 32-bit number Steam's grid and cache files use.
+
+    Non-Steam games (shortcuts) have a 32-bit app ID with the top bit set,
+    and Steam also refers to them by a 64-bit game ID, (appid << 32) |
+    0x02000000. Both come out as the 32-bit app ID; anything unusable is 0.
+    """
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if value <= 0:
+        return 0
+    if value > 0xFFFFFFFF:
+        return (value >> 32) & 0xFFFFFFFF
+    return value
+
+
+def _launch_env_appid(proc_root, pid):
+    """App ID from a launch's environment, for launches whose AppId= is 0 or missing."""
+    try:
+        with open(os.path.join(proc_root, pid, "environ"), "rb") as handle:
+            env = handle.read(65536).split(b"\0")
+    except OSError:
+        return 0
+    found = {}
+    for item in env:
+        key, _, value = item.partition(b"=")
+        if key in (b"SteamGameId", b"SteamOverlayGameId", b"SteamAppId"):
+            found[key] = normalize_appid(value)
+    # SteamGameId carries the shortcut's 64-bit game ID; SteamAppId is 0 for shortcuts.
+    return found.get(b"SteamGameId") or found.get(b"SteamOverlayGameId") or found.get(b"SteamAppId") or 0
+
+
 def running_appid(proc_root="/proc"):
-    """App ID of the game Steam is running, from its `reaper SteamLaunch AppId=N` process (0 if none)."""
+    """App ID of the game Steam is running, from its `reaper SteamLaunch AppId=N` process (0 if none).
+
+    Non-Steam games launch through the same reaper; when their AppId= is 0
+    or missing, the launch's SteamGameId environment variable names them.
+    """
     best = (0, 0)
     try:
         entries = os.listdir(proc_root)
@@ -443,16 +487,16 @@ def running_appid(proc_root="/proc"):
             continue
         if b"SteamLaunch" not in args:
             continue
+        appid = 0
         for arg in args:
             if arg.startswith(b"AppId="):
-                try:
-                    appid = int(arg[6:])
-                except ValueError:
-                    break
-                # Newest launch wins if two are up (e.g. a game started from another).
-                if appid and int(entry) > best[0]:
-                    best = (int(entry), appid)
+                appid = normalize_appid(arg[6:])
                 break
+        if not appid:
+            appid = _launch_env_appid(proc_root, entry)
+        # Newest launch wins if two are up (e.g. a game started from another).
+        if appid and int(entry) > best[0]:
+            best = (int(entry), appid)
     return best[1]
 
 

@@ -375,19 +375,62 @@ interface LifetimeEvent {
   bRunning?: boolean;
 }
 
+// How often the running game is re-read from Steam's UI store (JS only, no panel traffic).
+const RUNNING_POLL_MS = 2000;
+
+// Steam's own idea of the game in front: also right for non-Steam games
+// (shortcuts), whose launch events don't always carry a usable app ID.
+function runningAppId(): number {
+  try {
+    const store = (window as unknown as {
+      SteamUIStore?: { MainRunningApp?: { appid?: number | string } | null };
+    }).SteamUIStore;
+    const id = Number(store?.MainRunningApp?.appid);
+    return Number.isFinite(id) && id > 0 ? id >>> 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function watchGames(): () => void {
+  let registration: { unregister?: () => void } | undefined;
   try {
     const sessions = (window as unknown as {
       SteamClient?: { GameSessions?: { RegisterForAppLifetimeNotifications?: (cb: (e: LifetimeEvent) => void) => { unregister?: () => void } } };
     }).SteamClient?.GameSessions;
-    const registration = sessions?.RegisterForAppLifetimeNotifications?.((event) => {
+    registration = sessions?.RegisterForAppLifetimeNotifications?.((event) => {
       const appid = Number(event?.unAppID) >>> 0;
       if (appid) gameEvent(appid, Boolean(event?.bRunning)).catch(() => undefined);
+      if (event?.bRunning) {
+        // If the event's ID isn't the one Steam's UI settles on (with
+        // shortcuts, possibly), Steam's wins once it's there.
+        window.setTimeout(() => {
+          const settled = runningAppId();
+          if (settled && settled !== appid) gameEvent(settled, true).catch(() => undefined);
+        }, RUNNING_POLL_MS);
+      }
     });
-    return () => registration?.unregister?.();
   } catch {
-    return () => undefined;
+    registration = undefined;
   }
+  // Report changes in Steam's running game too; this is what catches shortcuts.
+  let last = runningAppId();
+  if (last) gameEvent(last, true).catch(() => undefined);
+  const timer = window.setInterval(() => {
+    const now = runningAppId();
+    if (now === last) return;
+    if (last) gameEvent(last, false).catch(() => undefined);
+    if (now) gameEvent(now, true).catch(() => undefined);
+    last = now;
+  }, RUNNING_POLL_MS);
+  return () => {
+    window.clearInterval(timer);
+    try {
+      registration?.unregister?.();
+    } catch {
+      // Steam already dropped it
+    }
+  };
 }
 
 export default definePlugin(() => {
