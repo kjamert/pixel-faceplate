@@ -28,6 +28,15 @@ The rest of this page is the plugin, which only sends the panel something when i
 
 > **This is most likely the last version.** I'm still working on the hardware side, but anything new will go to [GabeCubeAura](https://github.com/Alyenax/GabeCubeAura) as pull requests instead of into this plugin. Updating this one by hand is a pain, and GabeCubeAura seems like a better home for it. Whether GabeCubeAura takes faceplate support is up to its author. If it does, this plugin steps aside on its own (0.2.1 or newer) and you can uninstall it. Until then, update this one or leave it as it is, whichever you like.
 
+## This fork (kjamert)
+
+A fork of [hodapp/pixel-faceplate](https://github.com/hodapp/pixel-faceplate) with a few additions. Same warnings apply, and these are less tested than the original.
+
+- **Non-Steam games** show their artwork too (shortcuts added to Steam, with art from SteamGridDB).
+- **Art from Steam's CDN** when a Steam game's art isn't in the local library cache. It's fetched once and kept in the plugin's folder.
+- **Show FPS**: the running game's frame rate in the top left corner of the artwork, read from the same gamescope feed as Steam's performance overlay. It's measured every 1–10 minutes (2 by default) and only redrawn when it moved by 3 or more, because every new number is a flash write.
+- A GitHub Actions workflow builds the installable ZIP on every push (Actions tab, Artifacts).
+
 ## TL;DR
 
 ### What you need

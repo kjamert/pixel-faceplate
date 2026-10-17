@@ -66,6 +66,13 @@ const LOGO_POSITIONS: { data: LogoPosition; label: string }[] = [
   { data: "bottom", label: "Bottom" },
 ];
 
+const FPS_INTERVALS = [
+  { data: 60, label: "Every minute" },
+  { data: 120, label: "Every 2 minutes" },
+  { data: 300, label: "Every 5 minutes" },
+  { data: 600, label: "Every 10 minutes" },
+];
+
 const COLORS = [
   { data: "#ff8c14", label: "Amber" },
   { data: "#ffffff", label: "White" },
@@ -243,6 +250,25 @@ function Content() {
               </PanelSectionRow>
             )}
             <PanelSectionRow>
+              <ToggleField
+                label="Show FPS"
+                description="The game's frame rate in the top left corner, from the same feed as Steam's performance overlay"
+                checked={s.fps_overlay}
+                onChange={(value) => save({ fps_overlay: value })}
+              />
+            </PanelSectionRow>
+            {s.fps_overlay && (
+              <PanelSectionRow>
+                <DropdownItem
+                  label="Measure FPS"
+                  description="Each new number is a flash write; it's only redrawn when it moves by 3 or more"
+                  rgOptions={FPS_INTERVALS}
+                  selectedOption={s.fps_interval}
+                  onChange={(option) => save({ fps_interval: option.data as number })}
+                />
+              </PanelSectionRow>
+            )}
+            <PanelSectionRow>
               <DropdownItem
                 label="Between games"
                 description={s.artwork_idle === "clock" ? "The clock writes to the panel's flash once a minute" : undefined}
@@ -338,6 +364,17 @@ function Content() {
         <PanelSectionRow>
           <Field label={status.phase.charAt(0).toUpperCase() + status.phase.slice(1)} description={status.detail} focusable={false} />
         </PanelSectionRow>
+        {s.mode === "artwork" && s.fps_overlay && appid > 0 && (
+          <PanelSectionRow>
+            <Field
+              label="FPS"
+              description="Last measured / on the panel. Nothing yet? The first reading comes 30 s after launch."
+              focusable={false}
+            >
+              {status.fps ?? "–"} / {status.fps_shown ?? "–"}
+            </Field>
+          </PanelSectionRow>
+        )}
         <PanelSectionRow>
           <Field
             label="Flash writes"

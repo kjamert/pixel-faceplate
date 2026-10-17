@@ -1,0 +1,147 @@
+# The running game's frame rate, sampled now and then from gamescope's feed to mangoapp.
+#
+# On SteamOS, gamescope sends mangoapp (Steam's performance overlay) one System V
+# message per game frame with that frame's time. Reading the queue briefly gives
+# the same numbers the overlay shows. A message goes to whichever reader takes it
+# first, so this only listens for about a second per sample: the overlay misses a
+# few frames' worth of graph, nothing else. Layout from gamescope's mangoapp.cpp
+# (struct mangoapp_msg_v1, packed); only fields that have been there since v1 are read.
+
+import ctypes
+import ctypes.util
+import errno
+import os
+import struct
+import time
+
+IPC_NOWAIT = 0o4000
+MSG_NOERROR = 0o10000
+# Legacy single-output message type, then the first per-connector one.
+FRAME_TYPES = (1, 100)
+# Offsets inside the message body (after the C long mtype).
+OFF_VERSION = 0
+OFF_APP_FRAMETIME = 8
+OFF_REFRESH = 42
+OFF_FLAGS = 44  # bit 0 app wants HDR, bit 1 Steam (not the game) has focus
+MIN_BODY = OFF_FLAGS + 1
+# Fewer frames than this in a sample isn't a frame rate worth showing.
+MIN_FRAMES = 5
+# Stale messages left from before are skipped, up to this many.
+MAX_DRAIN = 4096
+
+
+class _Message(ctypes.Structure):
+    _fields_ = [("mtype", ctypes.c_long), ("body", ctypes.c_ubyte * 1016)]
+
+
+def parse(body):
+    """(app frame time in ns, refresh Hz, Steam focused) from one message body, or None."""
+    if len(body) < MIN_BODY:
+        return None
+    (version,) = struct.unpack_from("<I", body, OFF_VERSION)
+    if version < 1:
+        return None
+    (frametime,) = struct.unpack_from("<Q", body, OFF_APP_FRAMETIME)
+    (refresh,) = struct.unpack_from("<H", body, OFF_REFRESH)
+    steam_focused = bool(body[OFF_FLAGS] & 0x02)
+    return frametime, refresh, steam_focused
+
+
+def frame_rate(frametimes):
+    """Frames per second from a list of frame times in ns (median, so hitches don't count), or None."""
+    usable = sorted(t for t in frametimes if 1_000_000 <= t <= 1_000_000_000)  # 1000 to 1 fps
+    if len(usable) < MIN_FRAMES:
+        return None
+    return int(round(1e9 / usable[len(usable) // 2]))
+
+
+def _gamescope_cwd(proc_root="/proc"):
+    """Working directory of a running mangoapp or gamescope, for ftok's relative path."""
+    try:
+        entries = os.listdir(proc_root)
+    except OSError:
+        return None
+    for want in ("mangoapp", "gamescope", "gamescope-wl"):
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            try:
+                with open(os.path.join(proc_root, entry, "comm"), "r") as handle:
+                    if handle.read().strip() != want:
+                        continue
+                return os.readlink(os.path.join(proc_root, entry, "cwd"))
+            except OSError:
+                continue
+    return None
+
+
+class MangoappFeed:
+    """Opens the queue lazily; every call is safe when there is no gamescope at all."""
+
+    def __init__(self, libc=None, proc_root="/proc"):
+        self._libc = libc
+        self._proc_root = proc_root
+        self.queue = -1
+
+    def _lib(self):
+        if self._libc is None:
+            lib = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+            lib.ftok.argtypes = [ctypes.c_char_p, ctypes.c_int]
+            lib.ftok.restype = ctypes.c_int
+            lib.msgget.argtypes = [ctypes.c_int, ctypes.c_int]
+            lib.msgget.restype = ctypes.c_int
+            lib.msgrcv.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_long, ctypes.c_int]
+            lib.msgrcv.restype = ctypes.c_ssize_t
+            self._libc = lib
+        return self._libc
+
+    def _open(self):
+        if self.queue >= 0:
+            return True
+        lib = self._lib()
+        # gamescope and mangoapp both call ftok("mangoapp", 65) relative to their
+        # own working directory; with no such file there it's -1, a fixed key.
+        cwd = _gamescope_cwd(self._proc_root)
+        key = lib.ftok(os.path.join(cwd, "mangoapp").encode(), 65) if cwd else -1
+        self.queue = lib.msgget(key, 0)  # never create one
+        return self.queue >= 0
+
+    def _receive(self, mtype):
+        """One message body of this type, b"" if none is waiting, None if the queue is gone."""
+        message = _Message()
+        size = self._lib().msgrcv(self.queue, ctypes.byref(message), ctypes.sizeof(message.body),
+                                  mtype, IPC_NOWAIT | MSG_NOERROR)
+        if size < 0:
+            if ctypes.get_errno() in (errno.ENOMSG, errno.EAGAIN, errno.EINTR):
+                return b""
+            self.queue = -1
+            return None
+        return bytes(message.body[:size])
+
+    def sample(self, seconds=1.0):
+        """The game's frame rate over about `seconds`, or None (no game frames, no gamescope)."""
+        try:
+            if not self._open():
+                return None
+            for mtype in FRAME_TYPES:
+                for _ in range(MAX_DRAIN):  # throw away what piled up before this sample
+                    if not self._receive(mtype):
+                        break
+            times = []
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                got = False
+                for mtype in FRAME_TYPES:
+                    body = self._receive(mtype)
+                    if body is None:
+                        return None
+                    if body:
+                        got = True
+                        parsed = parse(body)
+                        if parsed and not parsed[2]:
+                            times.append(parsed[0])
+                if not got:
+                    time.sleep(0.004)
+            return frame_rate(times)
+        except (OSError, AttributeError, ValueError):
+            return None

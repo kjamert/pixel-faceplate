@@ -30,6 +30,11 @@ DEFAULTS = {
     # Faceplate mounted upside down so the cable leaves on the right. The
     # included cable is too short for that side; it needs a longer one.
     "rotate": False,
+    # Artwork mode: the game's frame rate in the top left corner. Each new
+    # number is a flash write, so it's measured every fps_interval seconds and
+    # only redrawn when it moved by at least a few frames per second.
+    "fps_overlay": False,
+    "fps_interval": 120,
     # Per-game overrides, keyed by app ID: {"1931770": {"art_style": "logo"}}.
     # Only GAME_KEYS can differ per game; everything else is the console's.
     "game_profiles": {},
@@ -85,10 +90,12 @@ def validate(changes):
             if value not in LOGO_POSITIONS:
                 raise ValueError("logo_position must be one of %s" % ", ".join(LOGO_POSITIONS))
             out[key] = value
-        elif key in ("clock_24h", "rotate"):
+        elif key in ("clock_24h", "rotate", "fps_overlay"):
             out[key] = bool(value)
         elif key == "brightness":
             out[key] = _int(value, "brightness", 0, 100)
+        elif key == "fps_interval":
+            out[key] = _int(value, "FPS interval", 60, 600)
         elif key == "aura_interval":
             out[key] = _int(value, "aura interval", 30, 600)
         elif key == "clock_color":

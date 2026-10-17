@@ -20,6 +20,8 @@ export interface Settings {
   sleep_action: SleepAction;
   shutdown_action: SleepAction;
   rotate: boolean;
+  fps_overlay: boolean;
+  fps_interval: number;
   game_profiles: Record<string, GameProfile>;
 }
 
@@ -41,6 +43,9 @@ export interface Status {
   last_error: string;
   // Set when another plugin (GabeCubeAura) has built-in faceplate support.
   handed_to: string;
+  // Last frame rate measured and the number on the panel (null until there is one).
+  fps: number | null;
+  fps_shown: number | null;
   settings: Settings;
 }
 

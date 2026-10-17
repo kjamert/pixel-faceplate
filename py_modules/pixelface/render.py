@@ -5,7 +5,9 @@ import os
 import re
 import shutil
 import subprocess
+import ssl
 import time
+import urllib.request
 
 from .protocol import HEIGHT, WIDTH
 
@@ -264,6 +266,33 @@ def rotate(rgb):
     return bytes(out)
 
 
+# Frame rate badge for the corner of the game art: digits on a darkened box,
+# green / amber / red so the number reads at a glance from the couch.
+FPS_COLORS = ((55, (64, 255, 96)), (30, (255, 190, 32)), (0, (255, 64, 64)))
+
+
+def overlay_fps(rgb, fps, corner="top_left"):
+    """The frame with the frame rate drawn in a corner (5x7 digits on a dark box)."""
+    if rgb is None or fps is None:
+        return rgb
+    text = str(max(0, min(999, int(fps))))
+    width = Canvas.text_width(text, BIG)
+    box_w, box_h = width + 4, 7 + 4
+    x0 = 0 if corner.endswith("left") else WIDTH - box_w
+    y0 = 0 if corner.startswith("top") else HEIGHT - box_h
+    out = bytearray(rgb)
+    for y in range(y0, y0 + box_h):
+        for x in range(x0, x0 + box_w):
+            i = 3 * (y * WIDTH + x)
+            for k in range(3):
+                out[i + k] = out[i + k] // 5
+    color = next(c for limit, c in FPS_COLORS if fps >= limit)
+    canvas = Canvas()
+    canvas.px = out
+    canvas.text(x0 + 2, y0 + 2, text, color, BIG)
+    return canvas.bytes()
+
+
 def load_logo(path, max_width=WIDTH - 6, max_height=HEIGHT // 2):
     """A transparent logo PNG trimmed and box-averaged to fit the box.
 
@@ -426,10 +455,99 @@ def find_art(appid, kind, root=STEAM_ROOT):
             name = "%s.%s" % (stem, ext)
             for path in ([os.path.join(cache, str(appid), name)]
                          + sorted(glob.glob(os.path.join(cache, str(appid), "*", name)))
+                         + sorted(glob.glob(os.path.join(cache, str(appid), "**", name), recursive=True))
                          + [os.path.join(cache, "%d_%s" % (appid, name))]):
                 if _usable(path):
                     return path
+    return downloaded_art(appid, kind)
+
+
+# Steam games whose art isn't in the local library cache (it only holds what
+# the library has drawn lately, and some games, like ones with a launcher in
+# front, can be missing pieces) get it from Steam's public CDN once, kept in
+# the plugin's own folder. Non-Steam games have no CDN art: SteamGridDB only.
+ART_DOWNLOAD_DIR = None  # set by main.py; None turns downloading off
+CDN_HOSTS = (
+    "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/%d/%s",
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/%d/%s",
+)
+CDN_NAMES = {
+    "hero": ("library_hero.jpg",),
+    "logo": ("logo.png",),
+    "capsule": ("library_600x900.jpg",),
+    "header": ("header.jpg",),
+}
+# A miss is remembered this long before asking the CDN again.
+CDN_RETRY = 24 * 3600
+CDN_TIMEOUT = 4.0
+SHORTCUT_BIT = 0x80000000
+
+
+def _looks_like_image(data):
+    return data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def downloaded_art(appid, kind, directory=None, fetch=None):
+    """Path of art fetched from Steam's CDN (fetching it now if needed), or None."""
+    directory = directory or ART_DOWNLOAD_DIR
+    if not directory or not appid or appid & SHORTCUT_BIT or kind not in CDN_NAMES:
+        return None
+    base = os.path.join(directory, "%d_%s" % (appid, kind))
+    for ext in ("jpg", "png"):
+        if _usable("%s.%s" % (base, ext)):
+            return "%s.%s" % (base, ext)
+    missing = base + ".missing"
+    try:
+        if time.time() - os.path.getmtime(missing) < CDN_RETRY:
+            return None
+    except OSError:
+        pass
+    fetch = fetch or _fetch
+    for name in CDN_NAMES[kind]:
+        for host in CDN_HOSTS:
+            data = fetch(host % (appid, name))
+            if data and len(data) <= MAX_ART_BYTES and _looks_like_image(data):
+                path = "%s.%s" % (base, "png" if data[:4] == b"\x89PNG" else "jpg")
+                try:
+                    os.makedirs(directory, exist_ok=True)
+                    with open(path + ".tmp", "wb") as handle:
+                        handle.write(data)
+                    os.replace(path + ".tmp", path)
+                except OSError:
+                    return None
+                return path
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(missing, "w"):
+            pass
+    except OSError:
+        pass
     return None
+
+
+# Decky's bundled Python may not find the system's certificates on its own.
+SYSTEM_CA_FILES = ("/etc/ssl/certs/ca-certificates.crt", "/etc/ca-certificates/extracted/tls-ca-bundle.pem")
+
+
+def _ssl_context():
+    for path in SYSTEM_CA_FILES:
+        if os.path.isfile(path):
+            try:
+                return ssl.create_default_context(cafile=path)
+            except (OSError, ssl.SSLError):
+                continue
+    return ssl.create_default_context()
+
+
+def _fetch(url):
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "pixel-faceplate"})
+        with urllib.request.urlopen(request, timeout=CDN_TIMEOUT, context=_ssl_context()) as response:
+            if response.status != 200:
+                return None
+            return response.read(MAX_ART_BYTES + 1)
+    except (OSError, ValueError):
+        return None
 
 
 def normalize_appid(value):
