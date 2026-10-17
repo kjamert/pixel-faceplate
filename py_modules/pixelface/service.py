@@ -6,7 +6,7 @@ import os
 import threading
 import time
 
-from . import fps as fpsfeed, gif, protocol, render
+from . import cats, gif, protocol, render
 from .settings import for_game, parse_color
 from .transport import Link, LinkBusy, LinkError, find_port
 
@@ -37,78 +37,8 @@ ARTWORK_POLL = 5.0
 # How long sleep/shutdown handling waits for an upload or decode in progress.
 # logind's default InhibitDelayMaxSec is 5 s, so this stays well under it.
 POWER_LOCK_WAIT = 3.0
-# Frame rate badge: first reading this long after a game starts (loading
-# screens are meaningless), and a new number is only drawn when it moved at
-# least FPS_STEP from the one on the panel, so a steady game costs no writes.
-FPS_FIRST_DELAY = 30.0
-FPS_STEP = 3
-FPS_SAMPLE_SECONDS = 1.0
-
-
-class FpsSampler:
-    """Background thread: measures the running game's frame rate once per interval."""
-
-    def __init__(self, feed=None, on_reading=None):
-        self.feed = feed or fpsfeed.MangoappFeed()
-        self.on_reading = on_reading or (lambda: None)
-        self.appid = 0
-        self.interval = 120.0
-        self.enabled = False
-        self.value = None
-        self.next_at = 0.0
-        self.lock = threading.Lock()
-        self.wake = threading.Event()
-        self.stop_event = threading.Event()
-        self.thread = None
-
-    def configure(self, enabled, interval, appid):
-        with self.lock:
-            changed_app = appid != self.appid
-            self.enabled, self.interval = bool(enabled), float(interval)
-            if changed_app or not self.enabled:
-                self.appid = appid
-                self.value = None
-                self.next_at = time.monotonic() + FPS_FIRST_DELAY
-        if changed_app:
-            self.wake.set()
-
-    def start(self):
-        if self.thread and self.thread.is_alive():
-            return
-        self.stop_event.clear()
-        self.thread = threading.Thread(target=self._run, name="pixel-faceplate-fps", daemon=True)
-        self.thread.start()
-
-    def stop(self):
-        self.stop_event.set()
-        self.wake.set()
-        if self.thread:
-            self.thread.join(timeout=3)
-
-    def step(self):
-        """Take a reading if one is due; returns seconds until the next check."""
-        with self.lock:
-            enabled, appid, wait = self.enabled, self.appid, self.next_at - time.monotonic()
-        if not enabled or not appid:
-            return 5.0
-        if wait > 0:
-            return min(wait, 5.0)
-        reading = self.feed.sample(FPS_SAMPLE_SECONDS)
-        with self.lock:
-            if self.appid == appid and self.enabled:
-                self.value = reading
-                self.next_at = time.monotonic() + self.interval
-        self.on_reading()
-        return 5.0
-
-    def _run(self):
-        while not self.stop_event.is_set():
-            try:
-                delay = self.step()
-            except Exception:  # a reading is a nicety; never take the plugin down
-                delay = 30.0
-            self.wake.wait(delay)
-            self.wake.clear()
+# When no cat could be had (offline with an empty stash), try again this much later.
+CAT_RETRY = 60.0
 
 
 def frame_load(rgb):
@@ -154,7 +84,7 @@ class WriteCounter:
 
 class FaceplateService:
     def __init__(self, settings, logger=None, link_factory=Link, counter_path=None, owner_check=None,
-                 on_owner_change=None, fps_feed=None):
+                 on_owner_change=None):
         self.cfg = dict(settings)
         self.logger = logger
         self._link_factory = link_factory
@@ -192,9 +122,11 @@ class FaceplateService:
         self._on_owner_change = on_owner_change or (lambda owner: None)
         self.handed_to = ""
         self._owner_checked = 0.0
-        # Frame rate badge: the sampler measures, fps_shown is what's on the panel.
-        self.fps = FpsSampler(fps_feed, on_reading=self.wake.set)
-        self.fps_shown = None
+        # Between-games cats: the one on show and when the next one is due.
+        self.cats = cats.CatStash()
+        self.cat_frame = None
+        self.cat_due = 0.0
+        self.cat_shown_at = 0.0
 
     # ---- lifecycle -----------------------------------------------------
     def start(self):
@@ -203,10 +135,8 @@ class FaceplateService:
         self.stop_event.clear()
         self.thread = threading.Thread(target=self._run, name="pixel-faceplate", daemon=True)
         self.thread.start()
-        self.fps.start()
 
     def stop(self):
-        self.fps.stop()
         self.stop_event.set()
         self.wake.set()
         if self.thread:
@@ -224,13 +154,20 @@ class FaceplateService:
             self.cfg = dict(values)
             redraw = (
                 "mode", "image_path", "artwork_idle", "clock_color", "clock_24h",
-                "art_style", "logo_position", "rotate", "game_profiles", "fps_overlay",
+                "art_style", "logo_position", "rotate", "game_profiles",
             )
             if any(old.get(k) != self.cfg.get(k) for k in redraw):
                 self.last_hash = None
                 self.last_aura = None
+            if old.get("cat_interval") != self.cfg.get("cat_interval") and self.cat_frame is not None:
+                self.cat_due = self.cat_shown_at + self.cfg["cat_interval"] * 60
             if old.get("brightness") != self.cfg.get("brightness"):
                 self.applied_brightness = None
+        self.wake.set()
+
+    def next_cat(self):
+        """Show a different cat now (the panel's "Next cat" button)."""
+        self.cat_due = 0.0
         self.wake.set()
 
     def game_event(self, appid, running):
@@ -257,8 +194,6 @@ class FaceplateService:
             "appid": self.appid,
             "last_error": self.last_error,
             "handed_to": self.handed_to,
-            "fps": self.fps.value,
-            "fps_shown": self.fps_shown,
             "settings": cfg,
         }
 
@@ -418,15 +353,28 @@ class FaceplateService:
             # Steam's own launch/exit event (from the frontend) is instant; the
             # /proc check covers a client where that event never arrives.
             appid = self.reported_app or render.running_appid()
-            if appid != self.appid:
-                self.fps_shown = None
             self.appid = appid
-            self.fps.configure(cfg["fps_overlay"], cfg["fps_interval"], appid)
             rgb = self._artwork_frame(self.appid, for_game(cfg, self.appid))
             if rgb is None:
                 # Nothing running (or no art found for this game).
                 idle = cfg["artwork_idle"]
                 missing = "no artwork found for app %d" % appid if appid else ""
+                if idle == "cats":
+                    now = time.monotonic()
+                    if self.cat_frame is None or now >= self.cat_due:
+                        frame = self.cats.next_frame()
+                        if frame is not None:
+                            self.cat_frame = frame
+                            self.cat_shown_at = now
+                            self.cat_due = now + cfg["cat_interval"] * 60
+                        else:
+                            self.cat_due = now + CAT_RETRY
+                    if self.cat_frame is not None:
+                        self._upload(self.cat_frame)
+                        self._set("running", missing or "no game running, showing a cat (from %s)" % (
+                            self.cats.source or "earlier"))
+                        return max(1.0, min(ARTWORK_POLL, self.cat_due - time.monotonic()))
+                    idle = "steam"  # no cat to be had yet
                 if idle == "steam":
                     logo = self._steam_logo()
                     if logo is not None:
@@ -441,13 +389,6 @@ class FaceplateService:
                 self._set("running", missing or "no game running, keeping the last picture")
                 return ARTWORK_POLL
             detail = "artwork for app %d" % self.appid
-            if cfg["fps_overlay"]:
-                reading = self.fps.value
-                if reading is not None and (self.fps_shown is None or abs(reading - self.fps_shown) >= FPS_STEP):
-                    self.fps_shown = reading
-                if self.fps_shown is not None:
-                    rgb = render.overlay_fps(rgb, self.fps_shown)
-                    detail += ", %d FPS" % self.fps_shown
             self._upload(rgb)
             self._set("running", detail)
             return ARTWORK_POLL
@@ -460,9 +401,6 @@ class FaceplateService:
     def _step(self):
         with self.lock:
             cfg = dict(self.cfg)
-        if cfg["mode"] != "artwork" or not cfg["fps_overlay"]:
-            self.fps.configure(False, cfg["fps_interval"], 0)  # nothing to measure for
-            self.fps_shown = None
         if self.asleep:
             return 5.0  # the system is going down; don't wake the screen
         now = time.monotonic()

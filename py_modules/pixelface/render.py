@@ -266,33 +266,6 @@ def rotate(rgb):
     return bytes(out)
 
 
-# Frame rate badge for the corner of the game art: digits on a darkened box,
-# green / amber / red so the number reads at a glance from the couch.
-FPS_COLORS = ((55, (64, 255, 96)), (30, (255, 190, 32)), (0, (255, 64, 64)))
-
-
-def overlay_fps(rgb, fps, corner="top_left"):
-    """The frame with the frame rate drawn in a corner (5x7 digits on a dark box)."""
-    if rgb is None or fps is None:
-        return rgb
-    text = str(max(0, min(999, int(fps))))
-    width = Canvas.text_width(text, BIG)
-    box_w, box_h = width + 4, 7 + 4
-    x0 = 0 if corner.endswith("left") else WIDTH - box_w
-    y0 = 0 if corner.startswith("top") else HEIGHT - box_h
-    out = bytearray(rgb)
-    for y in range(y0, y0 + box_h):
-        for x in range(x0, x0 + box_w):
-            i = 3 * (y * WIDTH + x)
-            for k in range(3):
-                out[i + k] = out[i + k] // 5
-    color = next(c for limit, c in FPS_COLORS if fps >= limit)
-    canvas = Canvas()
-    canvas.px = out
-    canvas.text(x0 + 2, y0 + 2, text, color, BIG)
-    return canvas.bytes()
-
-
 def load_logo(path, max_width=WIDTH - 6, max_height=HEIGHT // 2):
     """A transparent logo PNG trimmed and box-averaged to fit the box.
 

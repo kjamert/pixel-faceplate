@@ -10,8 +10,10 @@ DEFAULTS = {
     "mode": "off",
     "brightness": 60,
     # Artwork mode with no game running: the Steam logo (one write per game
-    # exit), the clock (a write a minute) or keep the last game's picture.
+    # exit), the clock (a write a minute), keep the last game's picture, or a
+    # random cat photo, a new one every cat_interval minutes.
     "artwork_idle": "steam",
+    "cat_interval": 10,
     # How a game's art is drawn: logo_dim (logo over a darkened band, so the
     # title reads on busy art), logo (no band), art (no logo) or logo_only.
     "art_style": "logo_dim",
@@ -30,18 +32,13 @@ DEFAULTS = {
     # Faceplate mounted upside down so the cable leaves on the right. The
     # included cable is too short for that side; it needs a longer one.
     "rotate": False,
-    # Artwork mode: the game's frame rate in the top left corner. Each new
-    # number is a flash write, so it's measured every fps_interval seconds and
-    # only redrawn when it moved by at least a few frames per second.
-    "fps_overlay": False,
-    "fps_interval": 120,
     # Per-game overrides, keyed by app ID: {"1931770": {"art_style": "logo"}}.
     # Only GAME_KEYS can differ per game; everything else is the console's.
     "game_profiles": {},
 }
 
 SLEEP_ACTIONS = ("off", "dim", "keep")
-IDLE_CHOICES = ("steam", "clock", "keep")
+IDLE_CHOICES = ("steam", "clock", "keep", "cats")
 ART_STYLES = ("logo_dim", "logo", "art", "logo_only")
 LOGO_POSITIONS = ("bottom", "center", "top")
 GAME_KEYS = ("art_style", "logo_position")
@@ -90,12 +87,12 @@ def validate(changes):
             if value not in LOGO_POSITIONS:
                 raise ValueError("logo_position must be one of %s" % ", ".join(LOGO_POSITIONS))
             out[key] = value
-        elif key in ("clock_24h", "rotate", "fps_overlay"):
+        elif key in ("clock_24h", "rotate"):
             out[key] = bool(value)
         elif key == "brightness":
             out[key] = _int(value, "brightness", 0, 100)
-        elif key == "fps_interval":
-            out[key] = _int(value, "FPS interval", 60, 600)
+        elif key == "cat_interval":
+            out[key] = _int(value, "cat interval", 1, 1440)
         elif key == "aura_interval":
             out[key] = _int(value, "aura interval", 30, 600)
         elif key == "clock_color":

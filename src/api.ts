@@ -3,7 +3,7 @@ import { callable } from "@decky/api";
 
 export type Mode = "off" | "artwork" | "clock" | "aura" | "image";
 export type SleepAction = "off" | "dim" | "keep";
-export type IdleChoice = "steam" | "clock" | "keep";
+export type IdleChoice = "steam" | "clock" | "keep" | "cats";
 export type ArtStyle = "logo_dim" | "logo" | "art" | "logo_only";
 export type LogoPosition = "bottom" | "center" | "top";
 
@@ -20,8 +20,7 @@ export interface Settings {
   sleep_action: SleepAction;
   shutdown_action: SleepAction;
   rotate: boolean;
-  fps_overlay: boolean;
-  fps_interval: number;
+  cat_interval: number;
   game_profiles: Record<string, GameProfile>;
 }
 
@@ -43,9 +42,6 @@ export interface Status {
   last_error: string;
   // Set when another plugin (GabeCubeAura) has built-in faceplate support.
   handed_to: string;
-  // Last frame rate measured and the number on the panel (null until there is one).
-  fps: number | null;
-  fps_shown: number | null;
   settings: Settings;
 }
 
@@ -62,6 +58,8 @@ export const saveSettings = callable<[changes: Partial<Settings>], SaveResult>("
 export const saveGameSettings = callable<[appid: number, changes: Partial<GameProfile> | null], SaveResult>(
   "save_game_settings",
 );
+
+export const nextCat = callable<[], boolean>("next_cat");
 
 export interface DiagnosticsResult {
   ok: boolean;

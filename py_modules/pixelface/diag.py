@@ -1,18 +1,15 @@
-# A plain-text report of what the plugin sees, for when game art or FPS doesn't show up.
-# Written from the Quick Access panel while a game runs; read-only apart from a
-# one-second FPS sample (the same one Show FPS takes).
+# A plain-text report of what the plugin sees, for when game art doesn't show up.
+# Written from the Quick Access panel while a game runs; it only reads.
 
-import ctypes
 import glob
 import json
 import os
 import re
 import time
 
-from . import __version__, fps, render
+from . import __version__, render
 
 REPORT_PATH = os.path.join(os.path.expanduser("~deck"), "pixel-faceplate-diagnostics.txt")
-MSG_COPY = 0o40000  # peek at a queued message by index without taking it
 
 
 def _read(path, limit=65536):
@@ -48,26 +45,6 @@ def _launches(proc_root="/proc"):
     return sorted(found, reverse=True)
 
 
-def _processes(names, proc_root="/proc"):
-    out = []
-    for entry in os.listdir(proc_root):
-        if not entry.isdigit():
-            continue
-        comm = _read(os.path.join(proc_root, entry, "comm"), 64)
-        if isinstance(comm, Exception) or comm.strip().decode(errors="replace") not in names:
-            continue
-        try:
-            cwd = os.readlink(os.path.join(proc_root, entry, "cwd"))
-        except OSError as error:
-            cwd = "unreadable: %s" % error.strerror
-        try:
-            uid = os.stat(os.path.join(proc_root, entry)).st_uid
-        except OSError:
-            uid = "?"
-        out.append("%s pid %s uid %s cwd %s" % (comm.strip().decode(errors="replace"), entry, uid, cwd))
-    return out
-
-
 def _grid_report(root, appids):
     lines = []
     users = _read(os.path.join(root, "config", "loginusers.vdf"))
@@ -93,34 +70,6 @@ def _grid_report(root, appids):
     return lines
 
 
-def _queue_report(feed):
-    lines = []
-    table = _read("/proc/sysvipc/msg")
-    lines.append("/proc/sysvipc/msg:")
-    lines += ["  " + line for line in (str(table) if isinstance(table, Exception) else table.decode()).splitlines()]
-    lines += ["process: " + p for p in _processes(("gamescope", "gamescope-wl", "mangoapp"))] or ["no gamescope or mangoapp process"]
-    try:
-        opened = feed._open()
-    except OSError as error:
-        opened = False
-        lines.append("open failed: %s" % error)
-    lines.append("our key %s, queue id %s" % (feed.key, feed.queue))
-    if opened:
-        lib = feed._lib()
-        for index in range(10):
-            message = fps._Message()
-            size = lib.msgrcv(feed.queue, ctypes.byref(message), ctypes.sizeof(message.body), index,
-                              fps.IPC_NOWAIT | fps.MSG_NOERROR | MSG_COPY)
-            if size < 0:
-                lines.append("peek %d: nothing (errno %d)" % (index, ctypes.get_errno()))
-                break
-            lines.append("peek %d: type %d, %d bytes, %s" % (
-                index, message.mtype, size, fps.parse(bytes(message.body[:size]))))
-    value = feed.sample(1.0)
-    lines.append("1 s sample: %s FPS, %s" % (value, json.dumps(feed.stats, default=str)))
-    return lines, value
-
-
 def write_report(service, frontend):
     """Write the report next to the user's home and return a short summary for the panel."""
     lines = ["Pixel Faceplate %s diagnostics, %s, plugin uid %d" % (
@@ -128,8 +77,7 @@ def write_report(service, frontend):
     status = service.status()
     settings = status.pop("settings")
     lines.append("status: " + json.dumps(status, default=str))
-    lines.append("settings: mode=%s fps_overlay=%s fps_interval=%s" % (
-        settings.get("mode"), settings.get("fps_overlay"), settings.get("fps_interval")))
+    lines.append("settings: mode=%s artwork_idle=%s" % (settings.get("mode"), settings.get("artwork_idle")))
 
     lines.append("")
     lines.append("== Which game is running")
@@ -158,20 +106,11 @@ def write_report(service, frontend):
             lines.append("  %s: %s" % (kind, render.find_art(appid, kind)))
     lines += _grid_report(render.STEAM_ROOT, candidates)
 
-    lines.append("")
-    lines.append("== FPS")
-    lines.append("sampler: enabled=%s appid=%s value=%s next in %.0f s, last stats %s" % (
-        service.fps.enabled, service.fps.appid, service.fps.value,
-        service.fps.next_at - time.monotonic(), json.dumps(getattr(service.fps.feed, "stats", {}), default=str)))
-    queue_lines, sampled = _queue_report(fps.MangoappFeed())
-    lines += queue_lines
-
     with open(REPORT_PATH, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
     shown = candidates[0] if candidates else 0
     art = render.find_art(shown, "hero") or render.find_art(shown, "capsule") if shown else None
     return {
         "path": REPORT_PATH,
-        "summary": "Game: %s. Art: %s. FPS sample: %s." % (
-            shown or "none found", "found" if art else "none", sampled if sampled is not None else "nothing"),
+        "summary": "Game: %s. Art: %s." % (shown or "none found", "found" if art else "none"),
     }
