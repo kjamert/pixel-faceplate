@@ -4,6 +4,8 @@ A Decky plugin for the [JSAUX Pixel Matrix Faceplate](https://jsaux.com/products
 
 ![Graveyard Keeper 2's artwork on the faceplate, next to the game on the TV](docs/in-use.jpg)
 
+> **This fork (kjamert):** hodapp's current version plus the Decky Loader 3.3 fix (Decky 3.3's bundled Python has no `termios`, so the original stops at "Loading..."), until that's merged upstream. Every push to `main` builds an installable ZIP on the [Releases](https://github.com/kjamert/pixel-faceplate/releases) page.
+
 ## How this went
 
 This started as a fun little plugin. The faceplate showed up one morning, I took it apart, worked out how JSAUX's software talks to it over coffee, and wrote my own Decky plugin so I didn't need theirs. Anything I couldn't do yet I figured was just stuff I hadn't figured out, and it'd all get way easier once JSAUX posted their source like the product page kind of promises ("supports open-source code").
